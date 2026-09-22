@@ -1,0 +1,132 @@
+name: Crear APK de Mis Papeles
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Compilar APK debug
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar archivos del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platform-tools
+            platforms;android-35
+            build-tools;35.0.0
+          accept-android-sdk-licenses: true
+
+      - name: Verificar Android SDK
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          command -v sdkmanager
+          command -v adb
+
+          sdkmanager --sdk_root="${ANDROID_HOME}" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Preparar proyecto
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          test -f MisPapeles-GitHub-APK.zip || {
+            echo "No se encontró MisPapeles-GitHub-APK.zip" >&2
+            exit 1
+          }
+
+          rm -rf paquete build-src
+          mkdir -p paquete build-src
+
+          unzip -q MisPapeles-GitHub-APK.zip -d paquete
+
+          proyecto_zip="$(
+            find paquete \
+              -type f \
+              -name 'MisPapelesAndroid-completo.zip' \
+              -print -quit
+          )"
+
+          test -n "$proyecto_zip" || {
+            echo "No se encontró MisPapelesAndroid-completo.zip dentro del paquete" >&2
+            find paquete -maxdepth 4 -type f -print
+            exit 1
+          }
+
+          unzip -q "$proyecto_zip" -d build-src
+
+          proyecto_dir="$(
+            find build-src \
+              -type f \
+              \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) \
+              -printf '%h\n' \
+              -quit
+          )"
+
+          test -n "$proyecto_dir" || {
+            echo "No se encontró un proyecto Gradle Android válido" >&2
+            find build-src -maxdepth 5 -type f -print
+            exit 1
+          }
+
+          echo "PROJECT_DIR=$proyecto_dir" >> "$GITHUB_ENV"
+
+      - name: Compilar APK
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          cd "$PROJECT_DIR"
+
+          if [[ -f ./gradlew ]]; then
+            chmod +x ./gradlew
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          else
+            gradle assembleDebug --no-daemon --stacktrace
+          fi
+
+      - name: Verificar APK generado
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          apk="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
+
+          test -f "$apk" || {
+            echo "No se generó el APK esperado: $apk" >&2
+            find "$PROJECT_DIR" -type f -name '*.apk' -print
+            exit 1
+          }
+
+          ls -lh "$apk"
+
+      - name: Guardar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MisPapeles-APK
+          path: '${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk'
+          if-no-files-found: error
